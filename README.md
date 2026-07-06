@@ -106,7 +106,7 @@
    - 多维审查
    - verdict 分档与流程阻断
    - pending / history 审查归档
-   - plan-review 遗留项闭环
+   - plan-review 计划阶段闭环原则
    - 审查落盘与归档
 
 6. [技术债与经验回流.md](./技术债与经验回流.md)

@@ -185,6 +185,7 @@ APPROVE / APPROVE WITH CHANGES / REQUEST CHANGES
 
 - 类型：
 - 等级：P0 / P1 / P2 / P3
+- 延后原因：业务未触发 / 主动拒绝（附“如改变”条件）/ 临时遗漏
 - 状态：open / in progress / paid / obsolete
 - 发现时间：
 - 发现来源：

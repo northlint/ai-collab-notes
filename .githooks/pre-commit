@@ -1,0 +1,26 @@
+#!/bin/bash
+# 机器闸门：commit 前依次跑同步基线校验与交叉引用校验，任一失败拒绝提交。
+# 逃生通道：确认误报或有意带漂移提交时，用 `git commit --no-verify` 跳过本闸门。
+set -u
+
+repo_root="$(git rev-parse --show-toplevel)" || exit 1
+
+fail=0
+for check in plan/check_sync.sh plan/check_refs.sh; do
+  printf '== pre-commit 闸门: %s ==\n' "$check"
+  if [ ! -f "$repo_root/$check" ]; then
+    printf '错误: 闸门脚本不存在: %s\n' "$repo_root/$check" >&2
+    fail=1
+    continue
+  fi
+  if ! /bin/bash "$repo_root/$check"; then
+    fail=1
+  fi
+done
+
+if [ "$fail" -ne 0 ]; then
+  printf '\npre-commit: 闸门未通过，拒绝提交。（确认误报可用 git commit --no-verify 逃生）\n' >&2
+  exit 1
+fi
+printf 'pre-commit: 全部闸门通过。\n'
+exit 0

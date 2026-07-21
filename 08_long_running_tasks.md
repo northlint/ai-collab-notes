@@ -10,6 +10,7 @@ At this point a dedicated execution orchestration system is needed:
 - watch: lightweight watcher
 - worker: serial executor
 - loop: long-running autonomous cycle
+- headless: an external, non-interactive loop that survives usage-limit windows
 - queue: task queue
 - handoff: cross-session handover
 - checkpoint: manual checkpoint
@@ -173,6 +174,23 @@ If either is found:
 | Suited for | Current-window mode, waiting for a reply, lightweight queue | Scheduled fallback, periodic tasks |
 | Risk | Becomes ineffective once the session closes | Requires idempotency and locking |
 
+### 3.5 Headless: When Neither Cron Nor Watch Can Escape a Modal Deadlock
+
+There is a failure mode that neither cron nor watch can solve, because it is structural rather than a scheduling problem: when an interactive session hits its usage-limit window mid-task, it does not go idle — it gets stuck behind a **modal confirmation** (a tool-permission prompt, a login/limit dialog). A cron trigger fired against that session does not resume it; nothing is listening. And once the usage window resets, the session does not self-heal — it is still sitting behind the same modal, waiting for a human who is not there.
+
+This means an in-session cron/watch wrapped around a task that might run long enough to cross a usage-limit window isn't "cron done wrong" — it's the wrong tool for this failure mode. The fix is structural, not tunable: move the loop entirely out of the interactive session into an **external, non-interactive process** — an OS-level shell loop repeatedly invoking a headless CLI call — where there is simply no UI layer for a modal to occupy. On hitting the limit, a headless call exits with an error; the shell loop sleeps and retries; once the window resets, the next call succeeds and picks up from the last commit.
+
+Call this mode **headless**. It differs from cron/watch by axis, not by degree:
+
+| | Cron / Watch (in-session) | Headless (external loop) |
+|---|---|---|
+| Where it runs | Inside an interactive session | An external process with no interactive UI |
+| Behavior on hitting a usage limit | Stuck behind a modal, non-idle, unrecoverable without a human | Exits with an error; the external loop sleeps and retries |
+| What it takes to resume | A human clears the modal | Nothing — it self-heals once the window resets |
+| Suited for | Tasks that stay within one usage window, or where a human is present | Tasks that may cross one or more usage-limit windows, fully unattended |
+
+If a task might run long enough to cross a usage-limit window and no human will be present to clear a stuck modal, that alone is the deciding factor for choosing headless over cron/watch — not task complexity, not duration by itself. (On tools that carry their own hidden human gesture and can deadlock a headless process the same way, see Case Library #32.)
+
 ## 4. Worker: A Serial, Complete Executor
 
 ### 4.1 What Worker Is
@@ -208,6 +226,7 @@ worker must have:
 - A safety boundary of not pushing / not merging
 - A manual checkpoint
 - Reset after failure
+- Synchronous sub-task dispatch whenever the worker itself runs as a single throwaway process: a sub-agent dispatched to the background is killed the moment that process exits, and there is no cross-round mechanism to wake it or recover its partial output (Case Library #31)
 
 ### 4.3 Worker's Risks
 
@@ -419,6 +438,21 @@ In one sentence:
 
 > An uncalibrated verification is more dangerous than no verification at all.
 
+### 5.9 Retry, Stall, and Fatal Are Three Different Things — and Misclassifying Between Them Must Not Be Safety-Critical
+
+An unattended loop needs to tell apart three situations that can all look like "this round produced nothing":
+
+- **Retry-worthy** (rate limit, transient overload, a timeout/hang): wait and try again; the task is still healthy.
+- **Stalled** (the model completed the round, exited cleanly, but produced zero commits): something is wrong with the task or the model's understanding of it; escalate.
+- **Fatal** (auth expired, billing/credit exhausted, a misconfigured model): retrying is pointless no matter how long you wait.
+
+Conflating these produces two distinct failure modes:
+
+1. **Counting a retry-worthy round as a stall.** If "no commit this round" alone drives the stall counter, a genuine rate-limit stretch — which can run for the length of the entire usage window — will trip the stall threshold and shut the loop down *before the window resets*, defeating the whole point of running unattended. The fix: the fast, round-based stall counter must count **only confirmed NOOPs** (clean exit, zero commits, not blocked); retries, timeouts, and errors are excluded from it entirely.
+2. **Trusting retry-classification to be safety-critical.** Rate-limit detection is inherently probabilistic — error text and exit codes vary across versions and are never fully reliable. If the stall counter's correctness depended on always classifying rate-limit rounds correctly, a single misclassification would become a safety failure. The fix is a second, independent detector: a **wall-clock watchdog** — time-since-last-commit, with its threshold deliberately set *above* the length of one usage window (e.g. 6h against a 5h window). It doesn't care why nothing landed; it only asks how long it's actually been. A genuine rate-limit stretch always resolves within one window and resets the clock; only a truly stuck loop (a misclassified retry looping forever, an unsplittable giant unit, a broken environment) burns through the watchdog's longer threshold. This makes the *accuracy* of retry classification a quality-of-logging concern rather than a safety one.
+
+When classifying "is this retry-worthy," prefer signals in this reliability order: a structured error field (e.g. an explicit rate-limit status code) over text matching over the process exit code (exit codes for the same failure can differ across versions and even across runs). And give fatal errors — the kind no amount of waiting fixes — their own fast-stop lane: detect them and stop immediately with a notification, rather than let them idle silently until the wall-clock watchdog finally catches them hours later.
+
 ## 6. Unattended Operation
 
 ### 6.1 Unattended Does Not Mean No One Is Responsible
@@ -519,6 +553,25 @@ Not suited for:
 - Visuals without a source
 - High-risk write operations
 - Interactions requiring substantial subjective judgment
+
+### 6.4 Readiness Gate: Every Pre-Launch Risk Needs One of Three Destinations
+
+Unattended does not mean "no one resolves ambiguity" — it means ambiguity has to be resolved *before* launch, because there is no one to ask once it's running. So every task queued for unattended execution must pass a readiness gate distinct from a plan review: a plan review asks "is this plan good, is it feasible"; a readiness gate asks only "is this unambiguous enough to run with no one watching."
+
+The gate works by walking every task and checking that every source of pre-launch risk (an unclear requirement, a vague description, insufficient data, fuzzy acceptance criteria, an open decision, wrong-sized granularity) has landed in exactly one of three legitimate destinations:
+
+1. **Resolved into the plan** — turned into something concrete, traceable, and checkable. Default choice.
+2. **Converted into a machine-checkable BLOCKED trigger** — what can't be resolved ahead of time becomes a condition the loop can detect and stop on (e.g. "visual-diff hotspot exceeds X% → BLOCKED", "contract has no basis → log the gap and mock forward, or BLOCKED").
+3. **Escalated to a pre-launch human decision** — a genuinely open call, made by a human before launch, never left for the unattended agent to guess.
+
+**Any task with a risk that hasn't landed in one of these three = gate fail, do not launch.** The report must be precise about which task, which risk category, and which destination is missing — e.g. "T-3's acceptance criterion stops at the action 'reconcile side by side,' with no item-by-item judgment and no BLOCKED threshold — both ① and ② are missing." Loosening the bar just to get moving defeats the point; this is exactly where unattended scenarios bury their landmines.
+
+Even after the gate passes in full, run one round manually (a `--max-rounds 1`-style dry run) to confirm the loop actually advances the first task and notifications actually arrive, before releasing it to run overnight unsupervised.
+
+Two mechanical corollaries are worth calling out explicitly, because both guard against a destructive step that an unattended loop typically runs every round:
+
+- **A dirty working tree must refuse to launch.** If each round opens by discarding the previous round's draft (a hard reset plus removing untracked files) to guarantee a known starting state, launching against an already-dirty tree means that first reset permanently destroys whatever uncommitted work was sitting there. Refuse to start unless the tree is clean, or the operator explicitly overrides it having acknowledged the loss.
+- **Volatile cross-round state must live outside that reset's blast radius.** A per-round reset is scoped to the repository; state that has to survive across rounds anyway — a blocked flag, a stall counter, the last-seen commit — must live somewhere the reset can't reach. Keeping it inside the repo means the very safety mechanism that protects durable state (reset-and-redo) silently wipes the volatile state too, and the loop redoes the same blocked batch forever.
 
 ## 7. Event Subscription, Polling, and Scheduling
 

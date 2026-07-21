@@ -719,3 +719,35 @@ A code comment or old ledger states: "this feature is blocked on an external dep
 ### Abstracted Rule
 
 > Use negative knowledge with a date attached; falsify a blocking conclusion before accepting it — it is not a skip-verification pass.
+
+## 31. A Sub-Agent Dispatched to the Background Dies With Its Parent Process
+
+### Anti-Pattern
+
+Inside a single round of a headless loop — a one-shot, non-interactive process that exits the moment the round ends — the implementer dispatches change-review's judgment sub-agents asynchronously in the background and then polls for their results. The round's timeout is a hard ceiling that includes polling time; the two sub-agents never finish before it's hit, the parent process is killed, and the entire round produces zero commits. This happened for real (2026-07-21): an otherwise correctly designed loop burned a full round on nothing.
+
+### Correct Approach
+
+- Inside any execution unit whose process lifetime ends with the round (a headless CLI call, a one-shot cron invocation), all sub-agents must be dispatched **synchronously** — the parent call blocks until they return.
+- "Parallel" inside such a unit means firing multiple synchronous calls in one batch so the harness runs them concurrently and returns together — never background-dispatch-then-poll. A backgrounded sub-agent has no independent lifetime: when the parent process exits, it is killed, and there is no cross-round mechanism to wake it up or recover its partial output.
+- This rule is easy to get backwards, because "dispatch sub-agents in the background and check on them later" is exactly the right pattern *inside a long-lived interactive session* — it only breaks the moment the parent's own lifetime is scoped to a single round.
+
+### Abstracted Rule
+
+> Inside a process whose lifetime ends with the round, every sub-agent must be dispatched synchronously — a backgrounded one dies with its parent and leaves nothing behind.
+
+## 32. An "Automated" Tool With a Hidden One-Time Human Gesture Buried Inside It
+
+### Anti-Pattern
+
+An unattended pipeline's tool whitelist includes a browser-automation MCP server configured to attach to the operator's real, already-logged-in Chrome via a browser extension. The tool looks fully automated — no code path calls out to a human. But the *first* time the headless process actually touches that extension, the extension itself pops up a one-time permission dialog ("Allow this connection?") that lives entirely inside the browser UI, outside any CLI permission system a skip-permissions-style flag can reach. In a headless environment there is no one to click it. The round hangs until the round-timeout kills it. This repeated for 9 consecutive rounds over 6 hours before a wall-clock watchdog finally caught the "no progress" pattern and stopped the loop.
+
+### Correct Approach
+
+- Before adding any tool/MCP server to an unattended pipeline's whitelist, check specifically for a one-time human gesture hidden inside it: an OAuth popup, a browser-extension permission dialog, an interactive login prompt, a device-pairing confirmation. These don't show up as a "requires human" step in the tool's own definition — they surface only the first time the tool is actually exercised.
+- Prefer variants of the same capability that are headless-safe by construction (e.g. a browser-automation tool that launches its own throwaway, unauthenticated browser instance) over ones that attach to a real, human-authorized session.
+- Restrict the unattended process to an explicit tool whitelist rather than inheriting the operator's full tool configuration — a tool that's perfectly safe in an interactive session (because a human is there to click through it once) can silently deadlock a headless one.
+
+### Abstracted Rule
+
+> A tool that never explicitly asks for permission in its own definition can still have a human gesture buried inside its first real invocation — audit for that specifically before trusting a tool in an unattended pipeline.

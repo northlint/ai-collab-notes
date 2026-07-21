@@ -128,3 +128,4 @@ Relationship to existing chapters: "reject the means, not the end" ("Upper-Level
 - [ ] Has the authority relationship among the methodology / template / skill forms been declared? Does the synchronization discipline have a mechanical trigger?
 - [ ] When the user cannot verify the output, have all critical constraints been escalated to L4/L5? Is review independence mechanized (role freezing / input isolation / judge-only-never-fix)?
 - [ ] Do escape hatches have automatic expiration and an audit trail? Has the harness undergone an adversarial self-check before going live (forged evidence gets blocked)?
+- [ ] Has every tool/MCP server on an unattended pipeline's whitelist been audited for a one-time human gesture hidden inside its first real invocation (OAuth popup, browser-extension permission dialog, interactive login) — not just for whether its own definition calls out to a human (Case Library #32)?

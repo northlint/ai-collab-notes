@@ -87,6 +87,8 @@ Task Entry
 | Cron | A scheduled-trigger mechanism, suited to fallback, continuation, and patrol — not suited to every real-time task |
 | Watch | A lightweight watcher process that exits and wakes the lead session upon detecting an event |
 | Worker | An executor capable of serially processing a complete task chain |
+| Headless Loop | An external, non-interactive execution loop, immune to the modal deadlock that strands in-session cron/watch when a usage-limit window is hit |
+| Readiness Gate | Every pre-launch risk must land in one of three destinations — resolved into the plan, converted to a machine-checkable BLOCKED trigger, or escalated to a human decision — before a task may run unattended |
 | Oracle | The arbiter of right and wrong in unattended tasks, e.g. a live implementation, a mock matrix, or screenshot comparison |
 | False-Green | A gate or self-check appears to pass but did not actually verify the target; gates must prove their own execution |
 | Sensor Calibration | Confirm that verification tools such as screenshots, devices, caches, tests, and APIs are observing current facts |
